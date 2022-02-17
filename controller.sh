@@ -8,15 +8,15 @@
 : ${TRANFORM_DEF_FILE:="/in/transform.jq"}
 
 ######## FUNCTIONS ########
-msg() { echo $@; } #echo '{"msg": "'$1'"}'; }
-dbg() { [ "$DEBUG" ] && msg "DBG $@"; }
+msg() { echo "$@"; } #echo '{"msg": "'$1'"}'; }
+dbg() { [ "$DEBUG" ] && msg ">DEBUG> $@"; }
 kj() { kubectl $@ -o json | jq --unbuffered -c "$WATCH_MASK"; }
 filterApplyLoop() {
   local inputUpdate lastValue
-  msg " >DBG> in filterApplyLoop"
+  dbg "in filterApplyLoop"
   while read -r inputUpdate
   do
-    dbg "> Read new json: \"$inputUpdate\""
+    dbg "Read new json: \"$inputUpdate\""
     [ "${inputUpdate}" == "${lastValue}" ] \
     || {
       msg "> Update detected"
@@ -33,7 +33,7 @@ filterApplyLoop() {
 msg ">> JQ Controller startig..."
 msg " > watching resource: $WATCH_TARGET"
 msg " > watch json mask: $WATCH_MASK"
-msg " > Transform definition file: $TRANFORM_DEF_FILE"
+msg " > transform definition file: $TRANFORM_DEF_FILE"
 [ -r ${TRANFORM_DEF_FILE} ] || {
   msg "ERROR: $TRANFORM_DEF_FILE is not readable!" | tee /dev/stderr
   ls -l "${TRANFORM_DEF_FILE}" 2>&1
@@ -41,25 +41,3 @@ msg " > Transform definition file: $TRANFORM_DEF_FILE"
 }
 ########## MAIN LOOP ############
 kj get --watch ${WATCH_TARGET} | filterApplyLoop
-################################
-exit 0
-
-
-## ~~ UNREACHABLE BELOW ~~ ##
-
-
-#########################################
-## GENERAL CONCEPT:
-#   - use main loop for jq with all --argjson args
-#   - use bash Coprocesses (see man) for interrupts handling apply
-###TODO:
-if [ "${EXTRA_WATCHES}" != "" ]
-then
-  for param in ${EXTRA_WATCHES}
-  do
-    arg=${param%%=*}
-    value=${param##*=}
-    msg " EXTRA: --argjson $arg $value"
-  done
-fi
-
