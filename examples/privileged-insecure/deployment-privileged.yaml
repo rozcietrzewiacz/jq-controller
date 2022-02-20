@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: jq-controller
+  name: jq-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jq-controller
+  template:
+    metadata:
+      labels:
+        app: jq-controller
+    spec:
+      securityContext:
+        # INSECURE: running as root!
+        runAsUser: 0
+        runAsGroup: 0
+        fsGroup: 0
+      containers:
+      - image: ghcr.io/rozcietrzewiacz/jq-controller:v0.1
+        name: jq-controller
+        volumeMounts:
+        - name: transform
+          mountPath: /in
+          readOnly: true
+        - name: kubeconfig
+          mountPath: /.kube/config
+          readOnly: true
+        env:
+        - name: WATCH_TARGET
+          value: configmap/jq-input
+      volumes:
+      - name: transform
+        configMap:
+          name: jq-transform
+          items:
+          - key: transform_cm-to-cm.jq
+            path: transform.jq
+      - name: kubeconfig
+        # INSECURE: mounting host's admin kubeconfig (full cluster access!)
+        hostPath:
+          path: /etc/kubernetes/admin.conf
+          type: File
+
