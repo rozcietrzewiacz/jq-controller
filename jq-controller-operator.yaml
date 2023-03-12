@@ -25,6 +25,8 @@ spec:
               value: jqcontrollers.xxx.jq
             - name: WATCH_MASK
               value: .
+            - name: EXTRA_ARGS_PATH
+              value: /extra
           image: portainer/kubectl-shell
           imagePullPolicy: Always
           name: ctr
@@ -36,10 +38,11 @@ spec:
               name: scripts
             - mountPath: /in
               name: filter
+            - mountPath: /extra
+              name: podinfo
       dnsPolicy: ClusterFirst
       restartPolicy: Always
       schedulerName: default-scheduler
-      securityContext: {}
       serviceAccount: jq-adm
       serviceAccountName: jq-adm
       terminationGracePeriodSeconds: 30
@@ -52,3 +55,20 @@ spec:
             defaultMode: 420
             name: jq-controller-operator.jq
           name: filter
+        - name: podinfo
+          projected:
+            sources:
+            - downwardAPI:
+                items:
+                - path: "labelJqCtr"
+                  fieldRef:
+                    fieldPath: metadata.labels['jq-ctr']
+                - path: "namespace"
+                  fieldRef:
+                    fieldPath: metadata.namespace
+                - path: "podname"
+                  fieldRef:
+                    fieldPath: metadata.name
+                - path: "poduid"
+                  fieldRef:
+                    fieldPath: metadata.uid

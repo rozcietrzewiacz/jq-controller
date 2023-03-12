@@ -1,0 +1,41 @@
+apiVersion: xxx.jq/v1alpha1
+kind: JqController
+metadata:
+  name: adm-ctr
+  namespace: jq-ctr
+spec:
+  transform:
+    input:
+      watchTarget:
+        apiGroup: v1
+        kind: Node
+      watchEvents: ADDED, MODIFIED
+      watchMask: "."
+    variablesFrom:
+    - configMap: templates
+    filter: |-
+      def tpl(s): s | fromjson;
+      .
+      | .metadata.name as $node
+      | tpl( $pod )
+      | .metadata.name = "adm-" + $node
+      | .spec |= (
+        .
+        | .nodeName = $node
+        | .containers = [{
+            name: "adm",
+            image: "portainer/kubectl-shell",
+            imagePullPolicy: "IfNotPresent",
+            command: [ "tail", "-f", "/dev/null" ],
+            securityContext: {
+              capabilities: {"add": ["NET_ADMIN"]}
+            }
+        }]
+      )
+    output:
+      affectedObjectTypes:
+      - apiVersion: v1
+        kind: Pod
+  watcherConfig:
+    image: portainer/kubectl-shell
+

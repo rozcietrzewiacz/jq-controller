@@ -1,4 +1,4 @@
-def chown( kind; name; uid ):
+def chown( api; kind; name; uid ):
   .metadata.ownerReferences = [
     {
       "apiVersion": api,
@@ -32,7 +32,7 @@ def cm ( name ):
 | .spec.transform."input".watchTarget as $target
 #################################
 
-## TODO: 
+## TODO:
 # | pod( controller )
 # , cm( filter )
 # , cm( controller )
@@ -48,13 +48,6 @@ def cm ( name ):
         "jq": "controller",
         "operator": $name
       },
-      #"namespace": $target.namespace,
-      #"ownerReferences": [{
-      #    "apiVersion": .apiVersion,
-      #    "kind": .kind,
-      #    "name": $name,
-      #    "blockOwnerDeletion": true,
-      #  }],
       "name": $name
     },
     "spec": {
@@ -67,25 +60,32 @@ def cm ( name ):
           ],
           "volumeMounts": [
             { "name": "scripts", "mountPath": "/ctr" },
-            { "name": "filter",  "mountPath": "/in" }
+            { "name": "filter",  "mountPath": "/in/filter" },
+            { "name": "vars",    "mountPath": "/in/vars" }
           ],
           "env": [
-            { "name": "TRANSFORM_DEF_FILE", "value": "/in/filter.jq" },
+            { "name": "TRANSFORM_DEF_FILE", "value": "/in/filter/filter.jq" },
             { "name": "WATCH_TARGET",       "value": ($target.kind + "." + $target.apiGroup) },
             { "name": "WATCH_EVENTS",       "value": "ADDED, MODIFIED" },
-            { "name": "WATCH_MASK",         "value": "." }
+            { "name": "WATCH_MASK",         "value": "." },
+            { "name": "EXTRA_ARGS_PATH",    "value": "/in/vars" }
           ]
         }],
       "restartPolicy": "Always",
-      "volumes": [
-        { "name": "scripts", "configMap": { "defaultMode": 420, "name": "jq-controller" }},
-        { "name": "filter",  "configMap": { "defaultMode": 420, "name": $name }}
-      ]
-    } 
+      "serviceAccount": "jq-adm",
+    }
   }
-  | chown(.kind, $name, .metadata.uid )
+  | .spec.volumes[0] =
+    { "name": "scripts", "configMap": { "defaultMode": 420, "name": "jq-controller" }}
+  | .spec.volumes[1] = { "name": "filter",  "configMap": { "defaultMode": 420, "name": $name }}
+  ## TODO: populate via projectedVolume with controller params (pod name, uid...)
+  | .spec.volumes[2] = { "name": "vars",    "configMap": { "defaultMode": 420, "name": "templates" }}
+  #| chown(.apiVersion; .kind; $name; .metadata.uid )
+)
+
 ,
 (
   cm( $name )
   | .data["filter.jq"] = $filter
 )
+
