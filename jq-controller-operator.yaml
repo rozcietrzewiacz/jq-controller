@@ -15,31 +15,31 @@ spec:
         jq-ctr: operator
     spec:
       containers:
-        - command:
-            - bash
-            - /c/controller.sh
-          env:
-            - name: TRANSFORM_DEF_FILE
-              value: /in/filter.jq
-            - name: WATCH_TARGET
-              value: jqcontrollers.xxx.jq
-            - name: WATCH_MASK
-              value: .
-            - name: EXTRA_ARGS_PATH
-              value: /extra
-          image: portainer/kubectl-shell
-          imagePullPolicy: Always
-          name: ctr
-          resources: {}
-          terminationMessagePath: /dev/termination-log
-          terminationMessagePolicy: File
-          volumeMounts:
-            - mountPath: /c
-              name: scripts
-            - mountPath: /in
-              name: filter
-            - mountPath: /extra
-              name: podinfo
+      - command:
+        - bash
+        - /c/controller.sh
+        env:
+        - name: TRANSFORM_DEF_FILE
+          value: /in/filter.jq
+        - name: WATCH_TARGET
+          value: jqcontrollers.xxx.jq
+        - name: WATCH_MASK
+          value: .
+        - name: EXTRA_ARGS_PATH
+          value: /extra
+        image: portainer/kubectl-shell
+        imagePullPolicy: Always
+        name: ctr
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /c
+          name: scripts
+        - mountPath: /in
+          name: filter
+        - mountPath: /extra
+          name: extra
       dnsPolicy: ClusterFirst
       restartPolicy: Always
       schedulerName: default-scheduler
@@ -47,28 +47,35 @@ spec:
       serviceAccountName: jq-adm
       terminationGracePeriodSeconds: 30
       volumes:
-        - configMap:
-            defaultMode: 420
-            name: jq-controller
-          name: scripts
-        - configMap:
-            defaultMode: 420
-            name: jq-controller-operator.jq
-          name: filter
-        - name: podinfo
-          projected:
-            sources:
-            - downwardAPI:
-                items:
-                - path: "labelJqCtr"
-                  fieldRef:
-                    fieldPath: metadata.labels['jq-ctr']
-                - path: "namespace"
-                  fieldRef:
-                    fieldPath: metadata.namespace
-                - path: "podname"
-                  fieldRef:
-                    fieldPath: metadata.name
-                - path: "poduid"
-                  fieldRef:
-                    fieldPath: metadata.uid
+      - configMap:
+          defaultMode: 420
+          name: jq-controller
+        name: scripts
+      - configMap:
+          defaultMode: 420
+          name: jq-controller-operator.jq
+        name: filter
+      - name: extra
+        projected:
+          defaultMode: 420
+          sources:
+          - downwardAPI:
+              items:
+              - fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.labels['jq-ctr']
+                path: labelJqCtr
+              - fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+                path: namespace
+              - fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+                path: podname
+              - fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.uid
+                path: poduid
+          - configMap:
+              name: templates
