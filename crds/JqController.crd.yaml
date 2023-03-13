@@ -1,0 +1,87 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: jqcontrollers.xxx.jq
+spec:
+  scope: Namespaced
+  group: xxx.jq
+  names:
+    kind: JqController
+    plural: jqcontrollers
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                apiVersion:
+                  type: string
+                kind:
+                  type: string
+                metadata:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                spec:
+                  type: object
+                  properties:
+                    transform:
+                      type: object
+                      properties:
+                        input:
+                          type: object
+                          properties:
+                            watchTarget:
+                              type: object
+                              properties:
+                                apiGroup:
+                                  type: string
+                                kind:
+                                  type: string
+                                namespace:
+                                  type: string
+                            watchEvents:
+                              type: string
+                            watchMask:
+                              type: string
+                        variablesFrom:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              varName:
+                                type: string
+                              configMap:
+                                type: object
+                                properties:
+                                  name:
+                                    type: string
+                                  key:
+                                    type: string
+                        filter:
+                          type: string
+                        output:
+                          type: object
+                          properties:
+                            affectedObjectTypes:
+                              type: array
+                              items:
+                                type: object
+                                properties:
+                                  apiVersion:
+                                    type: string
+                                  kind:
+                                    type: string
+                    watcherConfig:
+                      type: object
+                      properties:
+                        image:
+                          type: string
