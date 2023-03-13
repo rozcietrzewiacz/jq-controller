@@ -15,13 +15,35 @@ spec:
     - configMap: templates
     filter: |-
       def tpl(s): s | fromjson;
+
       .
       | .metadata.name as $node
+      | . as $parent
+      | .metadata.uid as $uid
+      ####### POD #####
       | tpl( $pod )
-      | .metadata.name = "adm-" + $node
+      ##
+      | .metadata |= (
+        .
+        | .name = "adm-" + $node
+        | .namespace = "jq-ctr"
+        | .labels = {
+          "jq-ctr": $parent.metadata.name
+        }
+        | .ownerReferences = [(
+          $parent
+          | { apiVersion: .apiVersion ,
+              kind: .kind,
+              name: .metadata.name,
+              uid: .metadata.uid
+            }
+        )]
+      )
+      ##
       | .spec |= (
         .
         | .nodeName = $node
+        | .serviceAccount = "jq-adm"
         | .containers = [{
             name: "adm",
             image: "portainer/kubectl-shell",
