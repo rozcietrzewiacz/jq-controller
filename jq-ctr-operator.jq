@@ -60,15 +60,15 @@ def cm ( name ):
           ],
           "volumeMounts": [
             { "name": "scripts", "mountPath": "/ctr" },
-            { "name": "filter",  "mountPath": "/in/filter" },
-            { "name": "vars",    "mountPath": "/in/vars" }
+            { "name": "extra",   "mountPath": "/extraArgs" },
+            { "name": "filter",  "mountPath": "/in" }
           ],
           "env": [
-            { "name": "TRANSFORM_DEF_FILE", "value": "/in/filter/filter.jq" },
+            { "name": "TRANSFORM_DEF_FILE", "value": "/in/filter.jq" },
             { "name": "WATCH_TARGET",       "value": ($target.kind + "." + $target.apiGroup) },
             { "name": "WATCH_EVENTS",       "value": "ADDED, MODIFIED" },
             { "name": "WATCH_MASK",         "value": "." },
-            { "name": "EXTRA_ARGS_PATH",    "value": "/in/vars" }
+            { "name": "EXTRA_ARGS_PATH",    "value": "/extraArgs" }
           ]
         }],
       "restartPolicy": "Always",
@@ -78,8 +78,7 @@ def cm ( name ):
   | .spec.volumes[0] =
     { "name": "scripts", "configMap": { "defaultMode": 420, "name": "jq-controller" }}
   | .spec.volumes[1] = { "name": "filter",  "configMap": { "defaultMode": 420, "name": $name }}
-  ## TODO: populate via projectedVolume with controller params (pod name, uid...)
-  | .spec.volumes[2] = { "name": "vars",    "configMap": { "defaultMode": 420, "name": "templates" }}
+  | .spec.volumes[2] = { "name": "extra",   "configMap": { "defaultMode": 420, "name": "templates" }}
   #| chown(.apiVersion; .kind; $name; .metadata.uid )
 )
 
