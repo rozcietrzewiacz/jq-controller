@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jq-transform
+  namespace: default
+data:
+  transform_cm-to-cm.jq: |
+    {
+        apiVersion: "v1",
+        kind: "ConfigMap",
+        "metadata": {
+            "name": "jq-output"
+        },
+        data: {
+            extracted: .var
+        }
+    }
