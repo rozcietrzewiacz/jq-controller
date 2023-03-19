@@ -1,0 +1,562 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  creationTimestamp: null
+  name: jq-ctr
+spec: {}
+status: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jq-controller-operator
+  namespace: jq-ctr
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      jq-ctr: operator
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        jq-ctr: operator
+    spec:
+      containers:
+        - command:
+            - bash
+            - /c/controller.sh
+          env:
+            - name: TRANSFORM_DEF_FILE
+              value: /in/filter.jq
+            - name: WATCH_TARGET
+              value: jqcontrollers.xxx.jq
+            - name: WATCH_MASK
+              value: .
+            - name: LIB_PATH
+              value: /jqLib
+            - name: EXTRA_ARGS_PATH
+              value: /extra
+          image: portainer/kubectl-shell
+          imagePullPolicy: Always
+          name: ctr
+          resources: {}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - mountPath: /c
+              name: scripts
+            - mountPath: /in
+              name: filter
+            - mountPath: /extra
+              name: extra
+            - mountPath: /jqLib
+              name: jqlib
+            - mountPath: /extraArgs
+              name: extra
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: jq-adm
+      serviceAccountName: jq-adm
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - configMap:
+            defaultMode: 420
+            name: jq-controller
+          name: scripts
+        - configMap:
+            defaultMode: 420
+            name: jq-controller-operator.jq
+          name: filter
+        - configMap:
+            defaultMode: 420
+            name: lib.jq
+          name: jqlib
+        - name: extra
+          projected:
+            defaultMode: 420
+            sources:
+              - downwardAPI:
+                  items:
+                    - fieldRef:
+                        apiVersion: v1
+                        fieldPath: metadata.labels['jq-ctr']
+                      path: labelJqCtr
+                    - fieldRef:
+                        apiVersion: v1
+                        fieldPath: metadata.namespace
+                      path: namespace
+                    - fieldRef:
+                        apiVersion: v1
+                        fieldPath: metadata.name
+                      path: parentControllerName
+                    - fieldRef:
+                        apiVersion: v1
+                        fieldPath: metadata.uid
+                      path: parentControllerUid
+              - configMap:
+                  name: templates
+---
+apiVersion: v1
+data:
+  controller.sh: |+
+    #!/bin/bash
+    : ${WATCH_TARGET:="configmap"} # Object being watched
+    : ${WATCH_MASK:=".data"} # Only react to changes in that object path
+    : ${EXTRA_ARGS_PATH:=""}
+    : ${LIB_PATH:=""}
+    : ${TRANSFORM_DEF_FILE:="/in/filter.jq"}
+    : ${WATCH_EVENTS:='ADDED, MODIFIED'}
+
+    msg() { echo "$@"; }
+    dbg() { [ "$DEBUG" ] && msg ">DEBUG> $@"; }
+    kj() {
+      kubectl $@ -o json \
+        | jq --unbuffered -c --arg watch_events "$WATCH_EVENTS" \
+          '
+            .type as $type
+            | select(
+                ( $watch_events | split(", ") | index($type) ) != null
+              )
+            | .object
+          '
+    }
+
+    filterApplyLoop() {
+      local inputUpdate lastValue result=0
+      dbg "in filterApplyLoop"
+      while read -r inputUpdate
+      do
+        dbg "Read new json: \"$inputUpdate\""
+        [ "${inputUpdate}" == "${lastValue}" ] \
+        || {
+          msg "> Update detected"
+          <<<${inputUpdate} jq -c \
+            -f ${TRANSFORM_DEF_FILE} \
+            $JQ_EXTRA_ARGS \
+          | kubectl apply -f -
+          result=$?
+          lastValue="${inputUpdate}"
+        }
+      done
+      msg ">> APPLY LOOP EXITED"
+      if [ $result -gt 0 ]
+      then
+        msg "Dumping dry-run output:"
+        <<<${inputUpdate} jq -c \
+          -f ${TRANSFORM_DEF_FILE} \
+          $JQ_EXTRA_ARGS
+      fi
+    }
+
+    msg ">> JQ Controller startig..."
+    msg " > watching resource: $WATCH_TARGET"
+    msg " > watch json mask: $WATCH_MASK"
+    msg " > transform definition file: $TRANSFORM_DEF_FILE"
+    [ -r ${TRANSFORM_DEF_FILE} ] || {
+      msg "ERROR: $TRANSFORM_DEF_FILE is not readable!" | tee /dev/stderr
+      ls -l "${TRANSFORM_DEF_FILE}" 2>&1
+      exit 1
+    }
+    WATCH_LIST=${TRANSFORM_DEF_FILE}:x
+    WATCH_LIST+=" ${BASH_ARGV0}:ex"
+    [ "${EXTRA_ARGS_PATH}" != "" ] && {
+      echo .... obtaining args from ${EXTRA_ARGS_PATH} ....
+      cd ${EXTRA_ARGS_PATH}
+      for name in *
+      do
+        if [[ $name == *".json" ]]
+        then
+          value=$( < $name jq '@json' )
+          JQ_EXTRA_ARGS+=" --argjson ${name%%\.json} $value"
+        else
+          value=$(< $name )
+          JQ_EXTRA_ARGS+=" --arg $name $value"
+        fi
+        WATCH_LIST+=" ${EXTRA_ARGS_PATH}/${name}:x"
+      done
+      cd - &>/dev/null
+      echo "JQ_EXTRA_ARGS: $JQ_EXTRA_ARGS"
+    }
+    [ "${LIB_PATH}" != "" ] && {
+      echo .... appending lib path to args ....
+      JQ_EXTRA_ARGS+=" -L $LIB_PATH"
+    }
+    handleExit() {
+      msg ">> INTERRUPT caught. Killing own pod <<"
+      set -x
+      #We need to force our parent to generate new pod,
+      # so that our children can be recreated
+      kubectl delete pod $HOSTNAME --wait=false --grace-period=2
+      #alternatively, if pod name is exposed through downwardAPI:
+      #kubectl delete po $(< ${EXTRA_ARGS_PATH}/name )
+      #exit
+    }
+
+    ####################
+    trap handleExit EXIT QUIT KILL TERM
+    echo "MY PID: $$"
+    set -x
+    inotifyd /ctr/reloader.sh ${WATCH_LIST} &
+    trap -p
+    set +x
+    while true
+    do
+      kj get --watch --output-watch-events  ${WATCH_TARGET} | filterApplyLoop
+    done
+
+  reloader.sh: |
+    #!/bin/bash
+    echo ">> reload called with args: $@" &>> /home/shell/reloader.log
+    echo ">> Change detected in $2. Reloading..." &>> /home/shell/reloader.log
+    set -x &>> /home/shell/reloader.log
+    kill 1 &>> /home/shell/reloader.log
+    #If own pod is still alive, try to kill it from here:
+    #kubectl delete pod $HOSTNAME
+    echo &>> /home/shell/reloader.log
+kind: ConfigMap
+metadata:
+  name: jq-controller
+  namespace: jq-ctr
+---
+apiVersion: v1
+data:
+  filter.jq: |-
+    include "lib";
+
+    ## input ##
+    . as $cr
+    | $cr.metadata.name as $name
+    | $cr.spec.transform.input as $src
+    | $src.watchTarget as $target
+    | $cr.spec.transform.filter as $filter
+    | $cr.spec.watcherConfig.image as $image
+    |
+    ### outpt generators ###
+    (
+      # 1. A controller as a pod
+      pod( $name )
+      |.metadata.labels["jq-ctr"] = $labelJqCtr
+      |.metadata.labels |= {
+        "jq-ctr.io/cr-uid": $cr.metadata.uid,
+        "jq-ctr.io/cr-name": $cr.metadata.name
+      }
+      # TODO: once propagated, use variables from labels
+      # fieldVar( "metadata.labels['jq-ctr.io/" + lbl + "']"; var)
+      |.spec.containers = [{
+          "name": "ctr",
+          "image": $image,
+          "command": [
+            "bash",
+            "/ctr/controller.sh"
+          ],
+          "volumeMounts": [
+            { "name": "scripts", "mountPath": "/ctr" },
+            { "name": "extra",   "mountPath": "/extra" },
+            { "name": "filter",  "mountPath": "/in" },
+            { "name": "jqlib",  "mountPath": "/jqLib" }
+          ],
+          "env": [
+            { "name": "TRANSFORM_DEF_FILE", "value": "/in/filter.jq" },
+            { "name": "WATCH_TARGET",  "value": ($target.kind + "." + $target.apiGroup) },
+            { "name": "WATCH_EVENTS",  "value": $src.watchEvents },
+            { "name": "WATCH_MASK",    "value": $src.watchMask },
+            { "name": "LIB_PATH",           "value": "/jqLib" },
+            { "name": "EXTRA_ARGS_PATH",    "value": "/extra" }
+          ]
+        }]
+      |.spec.serviceAccount = "jq-adm" #TODO
+      |.spec.volumes[0] = { "name": "scripts", "configMap": { "defaultMode": 420, "name": "jq-controller" }}
+      |.spec.volumes += [{ "name": "filter",  "configMap": { "defaultMode": 420, "name": $name }}]
+      |.spec.volumes += varsFrom([
+        #TODO Use variablesFrom field of the cr!
+        { configMap: "templates" },
+        { jqCtrLabel: "cr-uid",  var: "customResourceUid" },
+        { jqCtrLabel: "cr-name", var: "customResourceName" },
+        { field: "metadata.namespace", var: "parentNs" },
+        { field: "metadata.name", var: "parentName" },
+        { field: "metadata.uid", var: "parentUid" }
+      ])
+      |.spec.volumes += [{ "name": "jqlib", "configMap": { "defaultMode": 420, "name": "lib.jq" }}]
+      # Defining owner of the controller
+      #  - v1: owned by the operator pod
+      #| chown( "v1"; "Pod"; $parentName; $parentUid )
+      #  - v2: owned by the JqController CustomResource
+      | chown( $cr )
+    ) #END Pod
+    ,
+    # 2. filter definition
+    (
+      cm( $name )
+      | .data["filter.jq"] = $filter
+    )
+kind: ConfigMap
+metadata:
+  name: jq-controller-operator.jq
+  namespace: jq-ctr
+---
+apiVersion: v1
+data:
+  lib.jq: |-
+    def tpl(s): s | fromjson;
+    def chown( api; kind; name; uid ):
+      .metadata.ownerReferences = [
+        {
+          "apiVersion": api,
+          "kind": kind,
+          "name": name,
+          "uid": uid,
+          "blockOwnerDeletion": true,
+        }
+      ]
+    ;
+    def chown( owner ):
+      .metadata.ownerReferences = [
+        owner
+        |{
+          apiVersion,
+          kind,
+          "name": .metadata.name,
+          "uid": .metadata.uid,
+          blockOwnerDeletion: true,
+        }
+      ]
+    ;
+
+    def cm ( name ):
+      {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+          "labels": {
+            "jq": "controller",
+            "operator": name
+          },
+          "name": name
+        },
+        "data": {}
+      }
+    ;
+
+    def pod ( name ):
+      {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+          "labels": {
+            "jq": "controller",
+            "operator": name
+          },
+          "name": name
+        },
+        "spec": {
+          "restartPolicy": "Always"
+        }
+      }
+    ;
+
+    def fieldVar( field; var ):
+      {
+        "fieldRef": {
+          "fieldPath": field
+        },
+        "path": var
+      }
+    ;
+
+    def labelVar( lbl; var ):
+      fieldVar( "metadata.labels['jq-ctr.io/" + lbl + "']"; var)
+    ;
+
+    def varsFrom( varSpecArray ):
+      [
+        { "name": "extra", "projected": {
+          "defaultMode": 420,
+          "sources": [{
+            "downwardAPI": {
+              "items": [
+                ( varSpecArray[]
+                  | select(.jqCtrLabel != null)
+                  | labelVar( .jqCtrLabel; .var )
+                ),
+                ( varSpecArray[]
+                  | select(.field != null)
+                  | fieldVar( .field; .var )
+                )
+              ]
+            }
+          }]
+        }}
+        | .projected.sources += [
+          varSpecArray[]
+          | select(.configMap != null)
+          | { "configMap": { "name": .configMap }}
+        ]
+      ]
+    ;
+kind: ConfigMap
+metadata:
+  name: lib.jq
+  namespace: jq-ctr
+---
+apiVersion: v1
+data:
+  pod.json: |+
+    {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "namespace": "default"
+        },
+        "spec": {
+            "containers": [
+                {
+                    "imagePullPolicy": "Always"
+                }
+            ],
+            "dnsPolicy": "ClusterFirst",
+            "preemptionPolicy": "PreemptLowerPriority",
+            "restartPolicy": "Always"
+        }
+    }
+
+kind: ConfigMap
+metadata:
+  name: templates
+  namespace: jq-ctr
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jq-adm
+  namespace: jq-ctr
+secrets:
+  - name: jq-adm-token-jpt74
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-admin-jq
+rules:
+  - apiGroups:
+      - xxx.jq
+    resources:
+      - jqcontrollers
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - patch
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-admin-jq
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin-jq
+subjects:
+  - kind: ServiceAccount
+    name: jq-adm
+    namespace: jq-ctr
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: jqcontrollers.xxx.jq
+spec:
+  conversion:
+    strategy: None
+  group: xxx.jq
+  names:
+    kind: JqController
+    listKind: JqControllerList
+    plural: jqcontrollers
+    singular: jqcontroller
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            spec:
+              properties:
+                transform:
+                  properties:
+                    filter:
+                      type: string
+                    input:
+                      properties:
+                        watchEvents:
+                          type: string
+                        watchMask:
+                          type: string
+                        watchTarget:
+                          properties:
+                            apiGroup:
+                              type: string
+                            kind:
+                              type: string
+                          type: object
+                      type: object
+                    output:
+                      properties:
+                        affectedObjectTypes:
+                          items:
+                            properties:
+                              apiVersion:
+                                type: string
+                              kind:
+                                type: string
+                            type: object
+                          type: array
+                      type: object
+                    variablesFrom:
+                      items:
+                        properties:
+                          configMap:
+                            type: string
+                        type: object
+                      type: array
+                  type: object
+                watcherConfig:
+                  properties:
+                    image:
+                      type: string
+                  type: object
+              type: object
+          type: object
+      served: true
+      storage: true
