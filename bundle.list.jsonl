@@ -1,0 +1,9 @@
+{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"jq-ctr","namespace":null}}
+{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"jq-controller-operator","namespace":"jq-ctr"}}
+{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"jq-controller.sh","namespace":"jq-ctr"}}
+{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"jq-controller-operator.jq","namespace":"jq-ctr"}}
+{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"lib.jq","namespace":"jq-ctr"}}
+{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"templates","namespace":"jq-ctr"}}
+{"apiVersion":"v1","kind":"ServiceAccount","metadata":{"name":"jq-adm","namespace":"jq-ctr"}}
+{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRoleBinding","metadata":{"name":"cluster-admin-jq","namespace":null}}
+{"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition","metadata":{"name":"jqcontrollers.xxx.jq","namespace":null}}

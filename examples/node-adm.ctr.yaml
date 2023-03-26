@@ -5,59 +5,62 @@ metadata:
   namespace: jq-ctr
 spec:
   transform:
-    input:
-      watchTarget:
-        apiGroup: v1
-        kind: Node
-      watchEvents: ADDED, MODIFIED
-      watchMask: "."
-    variablesFrom:
-    - configMap: templates
     filter: |-
-      def tpl(s): s | fromjson;
-
+      include "lib";
+      ## main
       .
-      | .metadata.name as $node
-      | . as $parent
-      | .metadata.uid as $uid
+      | . as $source
+      | $source.metadata.name as $node
+      | $source.metadata.uid as $uid
       ####### POD #####
-      | tpl( $pod )
+      | deploy(
+        pod( "adm-" + $node )
+        ##
+        | .metadata |= (
+          .
+          | .namespace = "jq-ctr"
+          | .labels = {
+            "jq-ctr.io/cr-name": $customResourceName,
+            "jq-ctr.io/cr-uid": $customResourceUid,
+            "jq-ctr.io/source-kind": $source.kind,
+            "jq-ctr.io/source-name": $source.metadata.name,
+            "jq-ctr.io/source-uid": $source.metadata.uid
+          }
+        )
+        ##
+        | .spec |= (
+          .
+          | .nodeName = $node
+          | .serviceAccount = "jq-adm"
+          | .containers = [{
+              name: "adm",
+              image: "portainer/kubectl-shell",
+              imagePullPolicy: "IfNotPresent",
+              command: [ "tail", "-f", "/dev/null" ],
+              securityContext: {
+                capabilities: {"add": ["NET_ADMIN"]}
+              }
+          }]
+        )
+        # END pod
+      ) # END deployment
       ##
-      | .metadata |= (
-        .
-        | .name = "adm-" + $node
-        | .namespace = "jq-ctr"
-        | .labels = {
-          "jq-ctr": $parent.metadata.name
-        }
-        | .ownerReferences = [(
-          $parent
-          | { apiVersion: .apiVersion ,
-              kind: .kind,
-              name: .metadata.name,
-              uid: .metadata.uid
-            }
-        )]
-      )
-      ##
-      | .spec |= (
-        .
-        | .nodeName = $node
-        | .serviceAccount = "jq-adm"
-        | .containers = [{
-            name: "adm",
-            image: "portainer/kubectl-shell",
-            imagePullPolicy: "IfNotPresent",
-            command: [ "tail", "-f", "/dev/null" ],
-            securityContext: {
-              capabilities: {"add": ["NET_ADMIN"]}
-            }
-        }]
-      )
+      | chown( "xxx.jq/v1alpha1"; "JqController";
+               $customResourceName; $customResourceUid )
+    input:
+      watchEvents: ADDED, MODIFIED
+      watchMask: .
+      watchTarget:
+        apiGroup: ""
+        kind: nodes
     output:
       affectedObjectTypes:
-      - apiVersion: v1
-        kind: Pod
+        - apiGroup: apps
+          kind: deployments
+    variablesFrom:
+      - jqCtrLabel: cr-uid
+        var: customResourceUid
+      - jqCtrLabel: cr-name
+        var: customResourceName
   watcherConfig:
-    image: portainer/kubectl-shell
-
+    image: bitnami/kubectl

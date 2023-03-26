@@ -1,10 +1,13 @@
+---
 apiVersion: v1
 kind: Namespace
 metadata:
-  creationTimestamp: null
+  labels:
+    kubernetes.io/metadata.name: jq-ctr
   name: jq-ctr
-spec: {}
-status: {}
+spec:
+  finalizers:
+    - kubernetes
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -59,8 +62,6 @@ spec:
               name: extra
             - mountPath: /jqLib
               name: jqlib
-            - mountPath: /extraArgs
-              name: extra
       dnsPolicy: ClusterFirst
       restartPolicy: Always
       schedulerName: default-scheduler
@@ -71,7 +72,7 @@ spec:
       volumes:
         - configMap:
             defaultMode: 420
-            name: jq-controller
+            name: jq-controller.sh
           name: scripts
         - configMap:
             defaultMode: 420
@@ -199,14 +200,14 @@ data:
       kubectl delete pod $HOSTNAME --wait=false --grace-period=2
       #alternatively, if pod name is exposed through downwardAPI:
       #kubectl delete po $(< ${EXTRA_ARGS_PATH}/name )
-      #exit
+      exit
     }
 
     ####################
     trap handleExit EXIT QUIT KILL TERM
     echo "MY PID: $$"
     set -x
-    inotifyd /ctr/reloader.sh ${WATCH_LIST} &
+    inotifyd /c/reloader.sh ${WATCH_LIST} &
     trap -p
     set +x
     while true
@@ -225,7 +226,7 @@ data:
     echo &>> /home/shell/reloader.log
 kind: ConfigMap
 metadata:
-  name: jq-controller
+  name: jq-controller.sh
   namespace: jq-ctr
 ---
 apiVersion: v1
@@ -235,70 +236,72 @@ data:
 
     ## input ##
     . as $cr
-    | $cr.metadata.name as $name
+    | $cr.metadata.name as $crName
+    | $cr.metadata.uid  as $crUid
+    | $cr.metadata.namespace as $crNamespace
     | $cr.spec.transform.input as $src
-    | $src.watchTarget as $target
+    | $src.watchTarget as $target #XXX bad name!
     | $cr.spec.transform.filter as $filter
     | $cr.spec.watcherConfig.image as $image
     |
-    ### outpt generators ###
+    ### output generators ###
     (
-      # 1. A controller as a pod
-      pod( $name )
-      |.metadata.labels["jq-ctr"] = $labelJqCtr
-      |.metadata.labels |= {
-        "jq-ctr.io/cr-uid": $cr.metadata.uid,
-        "jq-ctr.io/cr-name": $cr.metadata.name
-      }
-      # TODO: once propagated, use variables from labels
-      # fieldVar( "metadata.labels['jq-ctr.io/" + lbl + "']"; var)
-      |.spec.containers = [{
-          "name": "ctr",
-          "image": $image,
-          "command": [
-            "bash",
-            "/ctr/controller.sh"
-          ],
-          "volumeMounts": [
-            { "name": "scripts", "mountPath": "/ctr" },
-            { "name": "extra",   "mountPath": "/extra" },
-            { "name": "filter",  "mountPath": "/in" },
-            { "name": "jqlib",  "mountPath": "/jqLib" }
-          ],
-          "env": [
-            { "name": "TRANSFORM_DEF_FILE", "value": "/in/filter.jq" },
-            { "name": "WATCH_TARGET",  "value": ($target.kind + "." + $target.apiGroup) },
-            { "name": "WATCH_EVENTS",  "value": $src.watchEvents },
-            { "name": "WATCH_MASK",    "value": $src.watchMask },
-            { "name": "LIB_PATH",           "value": "/jqLib" },
-            { "name": "EXTRA_ARGS_PATH",    "value": "/extra" }
-          ]
-        }]
-      |.spec.serviceAccount = "jq-adm" #TODO
-      |.spec.volumes[0] = { "name": "scripts", "configMap": { "defaultMode": 420, "name": "jq-controller" }}
-      |.spec.volumes += [{ "name": "filter",  "configMap": { "defaultMode": 420, "name": $name }}]
-      |.spec.volumes += varsFrom([
-        #TODO Use variablesFrom field of the cr!
-        { configMap: "templates" },
-        { jqCtrLabel: "cr-uid",  var: "customResourceUid" },
-        { jqCtrLabel: "cr-name", var: "customResourceName" },
-        { field: "metadata.namespace", var: "parentNs" },
-        { field: "metadata.name", var: "parentName" },
-        { field: "metadata.uid", var: "parentUid" }
-      ])
-      |.spec.volumes += [{ "name": "jqlib", "configMap": { "defaultMode": 420, "name": "lib.jq" }}]
-      # Defining owner of the controller
-      #  - v1: owned by the operator pod
-      #| chown( "v1"; "Pod"; $parentName; $parentUid )
-      #  - v2: owned by the JqController CustomResource
-      | chown( $cr )
-    ) #END Pod
+      # 0. RBAC
+      rbacGlobal( $crName; $crNamespace;
+        # TODO !! simplify this fn
+        [ $target | { apiGroup, resources: [ .kind ]} ];
+        $cr.spec.transform.output.affectedObjectTypes
+        | map({ apiGroup, resources: [ .kind ]})
+      )
+      #| chown( $cr )
+    )
+    ,
+    (
+      # 1. A controller as a deployment
+      deploy(
+        pod( $crName )
+        |.metadata.labels["jq-ctr"] = $labelJqCtr
+        |.metadata.labels |= {
+          "jq-ctr.io/cr-uid": $crUid,
+          "jq-ctr.io/cr-name": $crName
+        }
+        |.spec.containers = [{
+            "name": "ctr",
+            "image": $image,
+            "command": [
+              "bash",
+              "/c/controller.sh"
+            ],
+            "volumeMounts": [
+              { "name": "scripts", "mountPath": "/c" },
+              { "name": "extra",   "mountPath": "/extra" },
+              { "name": "filter",  "mountPath": "/in" },
+              { "name": "jqlib",  "mountPath": "/jqLib" }
+            ],
+            "env": [
+              { "name": "TRANSFORM_DEF_FILE", "value": "/in/filter.jq" },
+              { "name": "WATCH_TARGET",  "value": ($target.kind + "." + $target.apiGroup) },
+              { "name": "WATCH_EVENTS",  "value": $src.watchEvents },
+              { "name": "WATCH_MASK",    "value": $src.watchMask },
+              { "name": "LIB_PATH",           "value": "/jqLib" },
+              { "name": "EXTRA_ARGS_PATH",    "value": "/extra" }
+            ]
+          }]
+        |.spec.volumes[0] = { "name": "scripts", "configMap": { "defaultMode": 420, "name": "jq-controller.sh" }}
+        |.spec.volumes += [{ "name": "filter",  "configMap": { "defaultMode": 420, "name": $crName }}]
+        |.spec.volumes += varsFrom( $cr.spec.transform.variablesFrom )
+        |.spec.volumes += [{ "name": "jqlib", "configMap": { "defaultMode": 420, "name": "lib.jq" }}]
+        |.spec.serviceAccount = $crName
+      ) #END Pod
+    ) #END deployment
     ,
     # 2. filter definition
     (
-      cm( $name )
+      cm( $crName )
       | .data["filter.jq"] = $filter
     )
+    # 3. set the input CR to be the owner of all the above
+    | chown( $cr )
 kind: ConfigMap
 metadata:
   name: jq-controller-operator.jq
@@ -363,6 +366,25 @@ data:
         }
       }
     ;
+    def pod ( name; image ):
+      pod | .spec.containers[0].image = image
+    ;
+
+    def deploy ( pod ):
+      {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": pod.metadata,
+        "spec": {
+          "replicas": 1,
+          "selector": {
+            "matchLabels": pod.metadata.labels
+          },
+          "template": (pod | {metadata,spec})
+        }
+      }
+    ;
+    def deploy: deploy( . );
 
     def fieldVar( field; var ):
       {
@@ -403,6 +425,67 @@ data:
         ]
       ]
     ;
+    def rbacGlobal(name; ns; readObjects; writeObjects):
+      .
+      | ( "jq-ctr:global:" + name ) as $roleName
+      |{
+        "apiVersion": "v1",
+        "kind": "ServiceAccount",
+        "metadata": {
+          "name": name,
+          "namespace": ns
+        }
+      },
+      {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "ClusterRole",
+        "metadata": {
+          "name": $roleName
+        },
+        "rules": [
+          ## Read ##
+          (
+            readObjects[]
+            |
+            {
+              apiGroups: [ .apiGroup ],
+              resources,
+              verbs: ["get", "list", "watch"]
+            }
+          ),
+          ## Write ##
+          (
+            writeObjects[]
+            |
+            {
+              apiGroups: [ .apiGroup ],
+              resources,
+              verbs: ["get", "list", #???
+                "create", "update", "patch", "delete"]
+            }
+          )
+        ]
+      },
+      {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "ClusterRoleBinding",
+        "metadata": {
+          "name": $roleName
+        },
+        "roleRef": {
+          "apiGroup": "rbac.authorization.k8s.io",
+          "kind": "ClusterRole",
+          "name": $roleName
+        },
+        "subjects": [
+          {
+            "kind": "ServiceAccount",
+            "name": name,
+            "namespace": ns
+          }
+        ]
+      }
+    ;
 kind: ConfigMap
 metadata:
   name: lib.jq
@@ -439,41 +522,6 @@ kind: ServiceAccount
 metadata:
   name: jq-adm
   namespace: jq-ctr
-secrets:
-  - name: jq-adm-token-jpt74
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: cluster-admin-jq
-rules:
-  - apiGroups:
-      - xxx.jq
-    resources:
-      - jqcontrollers
-    verbs:
-      - get
-      - list
-      - watch
-  - apiGroups:
-      - ""
-    resources:
-      - configmaps
-      - pods
-    verbs:
-      - get
-      - list
-      - watch
-      - create
-      - patch
-  - apiGroups:
-      - ""
-    resources:
-      - nodes
-    verbs:
-      - get
-      - list
-      - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -482,7 +530,7 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: cluster-admin-jq
+  name: cluster-admin
 subjects:
   - kind: ServiceAccount
     name: jq-adm
@@ -529,6 +577,8 @@ spec:
                               type: string
                             kind:
                               type: string
+                            namespace:
+                              type: string
                           type: object
                       type: object
                     output:
@@ -536,7 +586,7 @@ spec:
                         affectedObjectTypes:
                           items:
                             properties:
-                              apiVersion:
+                              apiGroup:
                                 type: string
                               kind:
                                 type: string
@@ -547,6 +597,12 @@ spec:
                       items:
                         properties:
                           configMap:
+                            type: string
+                          field:
+                            type: string
+                          jqCtrLabel:
+                            type: string
+                          var:
                             type: string
                         type: object
                       type: array
