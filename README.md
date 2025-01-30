@@ -2,55 +2,35 @@
 
 [![Docker](https://github.com/rozcietrzewiacz/jq-controller/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/rozcietrzewiacz/jq-controller/actions/workflows/docker-publish.yml)
 
-A generic kubernetes controller based on jq. Quickly prototype your own operators using [jq filters](https://github.com/stedolan/jq)!
+A generic kubernetes operator leveraging the power of `jq`. Quickly prototype your own controllers using [jq filters](https://github.com/stedolan/jq)!
 
-The controller will `kubectl apply` whatever comes as a result of applying the `jq` filter on the input resource(s) you specify. 
+`jq-controller` simplifies the process of creating Kubernetes controllers for DevOps engineers. To get a fully-functional controller you only need to create a relatively simple Custom Resource called `JqController`. The business logic of your controller gets defined as a `jq` filter expression, allowing you to manipulate chosen k8s object, thus generating any set of output json manifests.
 
+While jq-controller assumes a basic understanding of Kubernetes, it can take care of the mundane and error prone tasks outside of your controller's business logic, such as configuring object ownerships, labels, and RBAC.
+
+Oh, and since it's written entirely in `jq` and `bash`, you don't need to worry about frequent language updates!
 
 ### how it works
-To give you a general idea of what it does, below is a simplified view of `jq-controller` operation flow:
+
+To give a general idea of what it does, below is a simplified view of `jq-controller` operation flow:
 
 ```shell
 kubectl get --watch ${WATCH_TARGET} -o json \
-| jq <your transform filter> \
+| jq 'filter_expression' \
 | kubectl apply -f -
 ```
 
-So, for example, if you specify:
+In other words, `jq-controller` will `kubectl apply` whatever comes as a result of applying the `jq` filter on the input resource you specify. Under the hood, `jq-controller` itself is an operator (written in `jq-controller` itself, of course) that watches `JqController` objects and creates custom controllers based on them.
 
- - `WATCH_TARGET=configmap/jq-input`
- - content of `configmap/jq-input`:
- ```yaml
-  apiVersion: v1
-  kind: ConfigMap
-  metadata:
-    name: jq-input
-  data:
-    var: Whatever, really
- ```
- - the value of your `jq` filter:
- ```json
-  {
-     "apiVersion": "v1",
-     "kind": "ConfigMap",
-     "metadata": {
-         "name": "jq-output"
-     },
-     "data": {
-         "extracted": .var
-     }
-  }
- ```
+### the `JqController` resource
 
-then the controller will create the following `configmap`:
+See [examples/](examples/)
 
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: jq-output
-data:
-  extracted: Whatever, really
+# Installation
+
+```
+kubectl apply -f https://raw.githubusercontent.com/rozcietrzewiacz/jq-controller/main/jq-controller-bundle.yaml
 ```
 
-And this is what the manifests under [examples/privileged-insecure/](examples/privileged-insecure/) will actually do if you `kubectl apply` them :)
+This will create a `jq-controller` operator in `jq-ctr` namespace.
+
