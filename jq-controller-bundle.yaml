@@ -37,8 +37,14 @@ spec:
             - bash
             - /c/controller.sh
           env:
+            - name: KUBECTL_MAIN_ACTION
+              value: apply
+            - name: HEADER_DEF_FILE
+              value: /in/header.jq
             - name: TRANSFORM_DEF_FILE
               value: /in/filter.jq
+            - name: FOOTER_DEF_FILE
+              value: /in/footer.jq
             - name: WATCH_TARGET
               value: jqcontrollers.xxx.jq
             - name: WATCH_MASK
@@ -48,11 +54,11 @@ spec:
             - name: EXTRA_ARGS_PATH
               value: /extra
           image: portainer/kubectl-shell
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           name: ctr
           resources: {}
           terminationMessagePath: /dev/termination-log
-          terminationMessagePolicy: File
+          terminationMessagePolicy: FallbackToLogsOnError
           volumeMounts:
             - mountPath: /c
               name: scripts
@@ -111,17 +117,29 @@ apiVersion: v1
 data:
   controller.sh: |+
     #!/bin/bash
+    : ${KUBECTL_MAIN_ACTION:=apply} # apply (loop) or create (single)
     : ${WATCH_TARGET:="configmap"} # Object being watched
-    : ${WATCH_MASK:=".data"} # Only react to changes in that object path
+    : ${WATCH_MASK:="."} # Only react to changes in that object path
     : ${EXTRA_ARGS_PATH:=""}
     : ${LIB_PATH:=""}
+    : ${HEADER_DEF_FILE:="/in/header.jq"}
     : ${TRANSFORM_DEF_FILE:="/in/filter.jq"}
+    : ${FOOTER_DEF_FILE:="/in/footer.jq"}
     : ${WATCH_EVENTS:='ADDED, MODIFIED'}
+    : ${WATCH_FUNCTION:=kubectlGetWatch}
 
     msg() { echo "$@"; }
     dbg() { [ "$DEBUG" ] && msg ">DEBUG> $@"; }
-    kj() {
-      kubectl $@ -o json \
+    main() {
+      ${WATCH_FUNCTION} \
+      | filterApplyLoop
+    }
+
+    kubectlGetWatch() {
+      local allNs=""
+      [[ $ALL_NS ]] && allNs="-A"
+      kubectl get --watch -o json --output-watch-events \
+        $allNs ${WATCH_TARGET} \
         | jq --unbuffered -c --arg watch_events "$WATCH_EVENTS" \
           '
             .type as $type
@@ -133,97 +151,158 @@ data:
     }
 
     filterApplyLoop() {
-      local inputUpdate lastValue result=0
+      local fullFilter=$(mktemp)
+      declare -A LastRev
+      _combineJsons() {
+        cat \
+          ${HEADER_DEF_FILE} \
+          ${TRANSFORM_DEF_FILE} \
+          ${FOOTER_DEF_FILE} \
+          > "$fullFilter"
+      }
+      _cleanup() {
+        rm -v "$fullFilter"
+      }
+      _uid() { jq -r '.metadata.uid'; }
+      _rev() { jq -r '.metadata.resourceVersion'; }
+      _masked() { <<<"$@" jq -c "$WATCH_MASK"; }
+
+      local inputUpdate lastValue output result=0 selfMod= inUid
       dbg "in filterApplyLoop"
+      _combineJsons
       while read -r inputUpdate
       do
-        dbg "Read new json: \"$inputUpdate\""
-        [ "${inputUpdate}" == "${lastValue}" ] \
+        dbg "read new json: \"$inputUpdate\""
+        # TODO: filter out based on fieldManager metadata
+        #
+        [ $(_masked "${inputUpdate}") == $(_masked "${lastValue}") ] \
         || {
-          msg "> Update detected"
-          <<<${inputUpdate} jq -c \
-            -f ${TRANSFORM_DEF_FILE} \
-            $JQ_EXTRA_ARGS \
-          | kubectl apply -f -
-          result=$?
           lastValue="${inputUpdate}"
+          echo
+          inUid=$(_uid <<<"${inputUpdate}")
+          msg "> Update detected for uid $inUid"
+          if [ $selfMod ] \
+            && [[ ${LastRev[$inUid]} == $(_rev <<<"${inputUpdate}") ]]
+          then
+            msg ">> skip! Same revision as our update <<"
+            sleep 1
+            continue
+          fi
+          output=$(
+            <<<"${inputUpdate}" jq -c \
+              -f "${fullFilter}" \
+              $JQ_EXTRA_ARGS \
+            | tee >( jq '{kind, ns:.metadata.namespace, name: .metadata.name}' -cC  > /dev/stderr )
+          )
+          updateTimestamp=$(date +%s)
+          # TODO: some sanity check/filter possible before apply
+          output=$( <<<"${output}" jq \
+            | kubectl ${KUBECTL_MAIN_ACTION} --field-manager='jq-controller' -o json -f - )
+          result=$?
+          # check if the output is the same object
+          if [[ "$inUid" == $(_uid <<<"${output}") ]]
+          then
+            msg " >> Modifying source object!"
+            selfMod=yes
+            LastRev[$inUid]=$( _rev <<<"${output}" )
+            msg "  > recorded: LastRev[$inUid]=${LastRev[$inUid]}"
+          fi
+          # If we're running in "create" mode, break after first successful run
+          [[ ${KUBECTL_MAIN_ACTION} == "create" && $result -eq 0 ]] && break
         }
       done
       msg ">> APPLY LOOP EXITED"
       if [ $result -gt 0 ]
       then
         msg "Dumping dry-run output:"
-        <<<${inputUpdate} jq -c \
-          -f ${TRANSFORM_DEF_FILE} \
+        <<<${inputUpdate} jq ${JQ_EXTRA_DUMP_ARGS} \
+          -f "${fullFilter}" \
           $JQ_EXTRA_ARGS
+      fi
+      _cleanup
+    }
+
+    hello() {
+      ############################################################
+      # TODO:
+      # - Add operating modes: poll/watch
+      # - Abstract source command, so that 'kubectl get' can be replaced with any custom script. Ideas:
+      #   . aws-cli --output json
+      #   . curl <rss-feed> | yq <extraction_filter>
+      #   . curl <any api endpoint>
+      msg ">> JQ Controller startig..."                       #
+      msg " > kubectl operting mode:    $KUBECTL_MAIN_ACTION" # H
+      msg " > watching resource:         $WATCH_TARGET"       # e
+      msg " > watch json mask:           $WATCH_MASK"         # l
+      msg " > header definition file:    $HEADER_DEF_FILE"    # l
+      msg " > transform definition file: $TRANSFORM_DEF_FILE" # o
+      msg " > footer definition file:    $FOOTER_DEF_FILE"    # ?
+      for f in ${HEADER_DEF_FILE} ${TRANSFORM_DEF_FILE} ${FOOTER_DEF_FILE}; do
+        [ -r ${f} ] || {                                      # .
+          msg "ERROR: $f is not readable!" | tee /dev/stderr  # .
+          ls -l "${f}" 2>&1                                   #
+          exit 1                                              # i
+        }                                                     # s
+      done                                                    #
+      WATCH_LIST="${HEADER_DEF_FILE}:x"                       # i
+      WATCH_LIST+=" ${TRANSFORM_DEF_FILE}:x"                  # t
+      WATCH_LIST+=" ${FOOTER_DEF_FILE}:x"                     #
+      WATCH_LIST+=" ${BASH_ARGV0}:ex"                         # m
+      [ "${EXTRA_ARGS_PATH}" != "" ] && {                     # e
+        msg " > obtaining args from ${EXTRA_ARGS_PATH} ..."   #
+        cd ${EXTRA_ARGS_PATH}                                 # y
+        for name in *                                         # o
+        do                                                    # u
+          if [[ $name == *".json" ]]                          # '
+          then                                                # r
+            value=$( < $name jq '@json' )                     # e
+            JQ_EXTRA_ARGS+=" --argjson ${name%%\.json} $value" #
+          else                                                # l
+            value=$(< $name )                                 # o
+            JQ_EXTRA_ARGS+=" --arg $name $value"              # o
+          fi                                                  # k
+          WATCH_LIST+=" ${EXTRA_ARGS_PATH}/${name}:x"         # i
+        done                                                  # n
+        cd - &>/dev/null                                      # g
+        echo "JQ_EXTRA_ARGS: $JQ_EXTRA_ARGS"                  #
+      }                                                       # f
+      [ "${LIB_PATH}" != "" ] && {                            # o
+        msg " > appending lib path to args..."                # r
+        JQ_EXTRA_ARGS+=" -L $LIB_PATH"                        # ?
+      }                                                       #
+    }
+
+    handleExit() {
+      echo ">> INTERRUPT caught. Killing own pod <<"
+      killall5 || kill $(pidof kubectl)
+    }
+
+    world() {
+      if [[ ${KUBECTL_MAIN_ACTION} == "create" ]]
+      then
+        main
+      else
+        while true
+        do
+          main
+          sleep 2
+        done
       fi
     }
 
-    msg ">> JQ Controller startig..."
-    msg " > watching resource: $WATCH_TARGET"
-    msg " > watch json mask: $WATCH_MASK"
-    msg " > transform definition file: $TRANSFORM_DEF_FILE"
-    [ -r ${TRANSFORM_DEF_FILE} ] || {
-      msg "ERROR: $TRANSFORM_DEF_FILE is not readable!" | tee /dev/stderr
-      ls -l "${TRANSFORM_DEF_FILE}" 2>&1
-      exit 1
-    }
-    WATCH_LIST=${TRANSFORM_DEF_FILE}:x
-    WATCH_LIST+=" ${BASH_ARGV0}:ex"
-    [ "${EXTRA_ARGS_PATH}" != "" ] && {
-      echo .... obtaining args from ${EXTRA_ARGS_PATH} ....
-      cd ${EXTRA_ARGS_PATH}
-      for name in *
-      do
-        if [[ $name == *".json" ]]
-        then
-          value=$( < $name jq '@json' )
-          JQ_EXTRA_ARGS+=" --argjson ${name%%\.json} $value"
-        else
-          value=$(< $name )
-          JQ_EXTRA_ARGS+=" --arg $name $value"
-        fi
-        WATCH_LIST+=" ${EXTRA_ARGS_PATH}/${name}:x"
-      done
-      cd - &>/dev/null
-      echo "JQ_EXTRA_ARGS: $JQ_EXTRA_ARGS"
-    }
-    [ "${LIB_PATH}" != "" ] && {
-      echo .... appending lib path to args ....
-      JQ_EXTRA_ARGS+=" -L $LIB_PATH"
-    }
-    handleExit() {
-      msg ">> INTERRUPT caught. Killing own pod <<"
-      set -x
-      #We need to force our parent to generate new pod,
-      # so that our children can be recreated
-      kubectl delete pod $HOSTNAME --wait=false --grace-period=2
-      #alternatively, if pod name is exposed through downwardAPI:
-      #kubectl delete po $(< ${EXTRA_ARGS_PATH}/name )
-      exit
-    }
-
     ####################
-    trap handleExit EXIT QUIT KILL TERM
+    export -f handleExit
+    trap handleExit INT
     echo "MY PID: $$"
-    set -x
-    inotifyd /c/reloader.sh ${WATCH_LIST} &
     trap -p
-    set +x
-    while true
-    do
-      kj get --watch --output-watch-events  ${WATCH_TARGET} | filterApplyLoop
-    done
 
-  reloader.sh: |
+    hello
+    world
+
+  dbg.sh: |+
     #!/bin/bash
-    echo ">> reload called with args: $@" &>> /home/shell/reloader.log
-    echo ">> Change detected in $2. Reloading..." &>> /home/shell/reloader.log
-    set -x &>> /home/shell/reloader.log
-    kill 1 &>> /home/shell/reloader.log
-    #If own pod is still alive, try to kill it from here:
-    #kubectl delete pod $HOSTNAME
-    echo &>> /home/shell/reloader.log
+    echo Dummy
+
 kind: ConfigMap
 metadata:
   name: jq-controller.sh
@@ -232,12 +311,10 @@ metadata:
 apiVersion: v1
 data:
   filter.jq: |-
-    include "lib";
-
     ## input ##
     . as $cr
-    | $cr.metadata.name as $crName
-    | $cr.metadata.uid  as $crUid
+    #OLD: | $cr.metadata.name as $customResourceName
+    #OLD: | $cr.metadata.uid  as $customResourceUid
     | $cr.metadata.namespace as $crNamespace
     | $cr.spec.transform.input as $src
     | $src.watchTarget as $target #XXX bad name!
@@ -247,23 +324,21 @@ data:
     ### output generators ###
     (
       # 0. RBAC
-      rbacGlobal( $crName; $crNamespace;
-        # TODO !! simplify this fn
-        [ $target | { apiGroup, resources: [ .kind ]} ];
+      rbac( $customResourceName; $crNamespace;
+        $cr.spec.transform.input.watchTarget;
         $cr.spec.transform.output.affectedObjectTypes
-        | map({ apiGroup, resources: [ .kind ]})
       )
-      #| chown( $cr )
     )
     ,
     (
       # 1. A controller as a deployment
       deploy(
-        pod( $crName )
+        pod( $customResourceName )
         |.metadata.labels["jq-ctr"] = $labelJqCtr
         |.metadata.labels |= {
-          "jq-ctr.io/cr-uid": $crUid,
-          "jq-ctr.io/cr-name": $crName
+          "jq-ctr.io/level": "controller",
+          "jq-ctr.io/cr-uid": $customResourceUid,
+          "jq-ctr.io/cr-name": $customResourceName
         }
         |.spec.containers = [{
             "name": "ctr",
@@ -278,30 +353,98 @@ data:
               { "name": "filter",  "mountPath": "/in" },
               { "name": "jqlib",  "mountPath": "/jqLib" }
             ],
-            "env": [
+            "env": (
+            [
+              { "name": "KUBECTL_MAIN_ACTION",
+                "value": ($cr.spec.mode == "single" and "create" // "apply" )
+              },
+              { "name": "HEADER_DEF_FILE", "value": "/in/header.jq" },
               { "name": "TRANSFORM_DEF_FILE", "value": "/in/filter.jq" },
+              { "name": "FOOTER_DEF_FILE", "value": "/in/footer.jq" },
               { "name": "WATCH_TARGET",  "value": ($target.kind + "." + $target.apiGroup) },
               { "name": "WATCH_EVENTS",  "value": $src.watchEvents },
               { "name": "WATCH_MASK",    "value": $src.watchMask },
               { "name": "LIB_PATH",           "value": "/jqLib" },
               { "name": "EXTRA_ARGS_PATH",    "value": "/extra" }
             ]
+            + (
+                if ($target.namespace == null)
+                then
+                [{ "name": "ALL_NS",    "value": "yes" }]
+                else
+                []
+                end
+              )
+            )
           }]
         |.spec.volumes[0] = { "name": "scripts", "configMap": { "defaultMode": 420, "name": "jq-controller.sh" }}
-        |.spec.volumes += [{ "name": "filter",  "configMap": { "defaultMode": 420, "name": $crName }}]
-        |.spec.volumes += varsFrom( $cr.spec.transform.variablesFrom )
         |.spec.volumes += [{ "name": "jqlib", "configMap": { "defaultMode": 420, "name": "lib.jq" }}]
-        |.spec.serviceAccount = $crName
+        |.spec.volumes += [{ "name": "filter",  "configMap": { "defaultMode": 420, "name": $customResourceName }}]
+        |.spec.volumes += varsFrom(
+          [{ jqCtrLabel: "cr-uid", var: "customResourceUid" },
+           { jqCtrLabel: "cr-name", var: "customResourceName" }]
+          +
+          $cr.spec.transform.variablesFrom )
+        |.spec.serviceAccount = $customResourceName
       ) #END Pod
     ) #END deployment
     ,
     # 2. filter definition
     (
-      cm( $crName )
+      cm( $customResourceName )
+      | .data["header.jq"] = (
+        $cr.spec.transform.header
+        #
+        #
+        ##### XXX HERE the header and footer need to be
+        # different than in the operator!
+        #
+        #
+        // "
+        include \"lib\";
+        . as $source
+        | $source.metadata.name as $sourceName
+        | $source.metadata.uid  as $sourceUid
+        |"
+      )
       | .data["filter.jq"] = $filter
+      | .data["footer.jq"] = (
+        # TODO: use merge instead (?)
+        $cr.spec.transform.footer
+        // "
+        #TODO: do the chown conditionally, depending on
+        # whether the output is the same as input:
+        #| chown($source)
+        | .metadata |= (
+          .
+          | .labels = {
+            # the CR-dedicated controller hardcodes these two:
+            \"jq-ctr.io/cr-name\": \"" + $customResourceName + "\",
+            \"jq-ctr.io/cr-uid\": \"" + $customResourceUid + "\",
+            \"jq-ctr.io/source-kind\": $source.kind,
+            \"jq-ctr.io/source-name\": $sourceName,
+            \"jq-ctr.io/source-uid\": $sourceUid
+          }
+        )"
+      )
     )
+  footer.jq: |-
     # 3. set the input CR to be the owner of all the above
-    | chown( $cr )
+    | chown( $source )
+    | .metadata |= (
+      .labels = {
+        "jq-ctr.io/cr-name": $customResourceName,
+        "jq-ctr.io/cr-uid": $customResourceUid
+      }
+    )
+  header.jq: |-
+    include "lib";
+
+    . as $source
+    # NOTE: The source in this case is the jc resource
+    | $source.metadata.name as $customResourceName
+    | $source.metadata.uid  as $customResourceUid
+    |
 kind: ConfigMap
 metadata:
   name: jq-controller-operator.jq
@@ -367,7 +510,11 @@ data:
       }
     ;
     def pod ( name; image ):
-      pod | .spec.containers[0].image = image
+      pod( name )
+      | .spec.containers[0] |= (
+        .image = image
+        | .name = name
+      )
     ;
 
     def deploy ( pod ):
@@ -386,6 +533,28 @@ data:
     ;
     def deploy: deploy( . );
 
+    def rs ( pod ):
+      deploy( pod )
+      | .kind = "ReplicaSet"
+    ;
+    def rs: rs( . );
+
+    def expose ( port ):
+      .metadata as $meta
+      |
+      {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": ( $meta | {name,namespace,labels} )
+      }
+      | .spec.ports += [{
+        "protocol": "TCP",
+        "port": port,
+        "targetPort": port
+      }]
+      | .spec.selector = $meta.labels
+    ;
+
     def fieldVar( field; var ):
       {
         "fieldRef": {
@@ -400,24 +569,32 @@ data:
     ;
 
     def varsFrom( varSpecArray ):
-      [
+      [   # FIXME: detect if it doesn't exist
+          # e.g. select(.name == "extra" ) // { <TEMPLATE> }
         { "name": "extra", "projected": {
           "defaultMode": 420,
           "sources": [{
             "downwardAPI": {
               "items": [
-                ( varSpecArray[]
-                  | select(.jqCtrLabel != null)
+                ( [ varSpecArray[]
+                    | select(.jqCtrLabel != null)
+                  ]
+                  | unique_by( .jqCtrLabel )
+                  |.[]
                   | labelVar( .jqCtrLabel; .var )
                 ),
-                ( varSpecArray[]
-                  | select(.field != null)
+                ( [ varSpecArray[]
+                    | select(.field != null)
+                  ]
+                  | unique_by( .field )
+                  |.[]
                   | fieldVar( .field; .var )
                 )
               ]
             }
           }]
         }}
+        # append configmaps
         | .projected.sources += [
           varSpecArray[]
           | select(.configMap != null)
@@ -425,9 +602,26 @@ data:
         ]
       ]
     ;
-    def rbacGlobal(name; ns; readObjects; writeObjects):
+
+    #def rbacGlobal(name; ns; readObject; writeObjects):
+    def rbac(name; ns; readObject; writeObjects):
       .
-      | ( "jq-ctr:global:" + name ) as $roleName
+      | ( readObject
+          | {
+              apiGroups: [.apiGroup],
+              resources: [.kind],
+              verbs: ["get", "list", "watch"]
+            }
+        ) as $ro
+      | ( writeObjects[]
+          | {
+              apiGroups: [.apiGroup],
+              resources: [.kind],
+              verbs: ["get", "list",
+                "create", "update", "patch", "delete"]
+            }
+        ) as $rw
+      | ( "jq-ctr:" + name ) as $roleName
       |{
         "apiVersion": "v1",
         "kind": "ServiceAccount",
@@ -443,27 +637,8 @@ data:
           "name": $roleName
         },
         "rules": [
-          ## Read ##
-          (
-            readObjects[]
-            |
-            {
-              apiGroups: [ .apiGroup ],
-              resources,
-              verbs: ["get", "list", "watch"]
-            }
-          ),
-          ## Write ##
-          (
-            writeObjects[]
-            |
-            {
-              apiGroups: [ .apiGroup ],
-              resources,
-              verbs: ["get", "list", #???
-                "create", "update", "patch", "delete"]
-            }
-          )
+          $ro,
+          $rw
         ]
       },
       {
@@ -471,6 +646,7 @@ data:
         "kind": "ClusterRoleBinding",
         "metadata": {
           "name": $roleName
+          #"namespace": ns
         },
         "roleRef": {
           "apiGroup": "rbac.authorization.k8s.io",
@@ -486,6 +662,36 @@ data:
         ]
       }
     ;
+      def hasTaints:
+        .spec.taints != null
+      ;
+
+      def hasTaint(t):
+        .spec
+        | (.taints // [])
+        | [
+          .[]
+          | select(
+            .key == ("node.kubernetes.io/" + t)
+          )
+        ]
+        | any
+      ;
+
+      def hasTaint(taint; effect):
+        .spec
+        | (.taints // [])
+        | [
+          .[]
+          | select(
+            .key == ("node.kubernetes.io/" + taint)
+          )
+          | select(
+            .effect == effect
+          )
+        ]
+        | any
+      ;
 kind: ConfigMap
 metadata:
   name: lib.jq
@@ -503,7 +709,7 @@ data:
         "spec": {
             "containers": [
                 {
-                    "imagePullPolicy": "Always"
+                    "imagePullPolicy": "IfNotPresent"
                 }
             ],
             "dnsPolicy": "ClusterFirst",
@@ -548,6 +754,9 @@ spec:
     kind: JqController
     listKind: JqControllerList
     plural: jqcontrollers
+    shortNames:
+      - jctr
+      - jc
     singular: jqcontroller
   scope: Namespaced
   versions:
