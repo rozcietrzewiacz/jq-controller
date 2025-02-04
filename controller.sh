@@ -106,6 +106,12 @@ filterApplyLoop() {
 
 hello() {
   ############################################################
+  # TODO:
+  # - Add operating modes: poll/watch
+  # - Abstract source command, so that 'kubectl get' can be replaced with any custom script. Ideas:
+  #   . aws-cli --output json
+  #   . curl <rss-feed> | yq <extraction_filter>
+  #   . curl <any api endpoint>
   msg ">> JQ Controller startig..."                       #
   msg " > kubectl operting mode:    $KUBECTL_MAIN_ACTION" # H
   msg " > watching resource:         $WATCH_TARGET"       # e
