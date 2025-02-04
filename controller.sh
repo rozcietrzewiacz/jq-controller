@@ -149,15 +149,8 @@ hello() {
 }
 
 handleExit() {
-  # TODO: This is likely not working
-  msg ">> INTERRUPT caught. Killing own pod <<"
-  set -x
-  #We need to force our parent to generate new pod,
-  # so that our children can be recreated
-  kubectl delete pod $HOSTNAME --wait=false --grace-period=10
-  #alternatively, if pod name is exposed through downwardAPI:
-  #kubectl delete po $(< ${EXTRA_ARGS_PATH}/name )
-  exit
+  echo ">> INTERRUPT caught. Killing own pod <<"
+  killall5 || kill $(pidof kubectl)
 }
 
 world() {
@@ -175,8 +168,9 @@ world() {
 
 ####################
 export -f handleExit
-trap handleExit EXIT QUIT KILL TERM
+trap handleExit INT
 echo "MY PID: $$"
+trap -p
 
 hello
 world
