@@ -79,7 +79,7 @@ filterApplyLoop() {
       updateTimestamp=$(date +%s)
       # TODO: some sanity check/filter possible before apply
       output=$( <<<"${output}" jq \
-        | kubectl ${KUBECTL_MAIN_ACTION} -o json -f - )
+        | kubectl ${KUBECTL_MAIN_ACTION} --field-manager='jq-controller' -o json -f - )
       result=$?
       # check if the output is the same object
       if [[ "$inUid" == $(_uid <<<"${output}") ]]
