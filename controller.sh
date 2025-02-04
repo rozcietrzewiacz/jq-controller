@@ -1,7 +1,7 @@
 #!/bin/bash
 : ${KUBECTL_MAIN_ACTION:=apply} # apply (loop) or create (single)
 : ${WATCH_TARGET:="configmap"} # Object being watched
-: ${WATCH_MASK:=".data"} # Only react to changes in that object path
+: ${WATCH_MASK:="."} # Only react to changes in that object path
 : ${EXTRA_ARGS_PATH:=""}
 : ${LIB_PATH:=""}
 : ${HEADER_DEF_FILE:="/in/header.jq"}
@@ -47,6 +47,7 @@ filterApplyLoop() {
   }
   _uid() { jq -r '.metadata.uid'; }
   _rev() { jq -r '.metadata.resourceVersion'; }
+  _masked() { <<<"$@" jq -c "$WATCH_MASK"; }
 
   local inputUpdate lastValue output result=0 selfMod= inUid
   dbg "in filterApplyLoop"
@@ -54,10 +55,9 @@ filterApplyLoop() {
   while read -r inputUpdate
   do
     dbg "read new json: \"$inputUpdate\""
-    # XXX fix option 1:
-    # Ignore some fields in the check below - or,
-    # even better: filter out based on fieldManager metadata
-    [ "${inputUpdate}" == "${lastValue}" ] \
+    # TODO: filter out based on fieldManager metadata
+    #
+    [ $(_masked "${inputUpdate}") == $(_masked "${lastValue}") ] \
     || {
       lastValue="${inputUpdate}"
       echo
