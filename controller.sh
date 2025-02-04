@@ -8,10 +8,16 @@
 : ${TRANSFORM_DEF_FILE:="/in/filter.jq"}
 : ${FOOTER_DEF_FILE:="/in/footer.jq"}
 : ${WATCH_EVENTS:='ADDED, MODIFIED'}
+: ${WATCH_FUNCTION:=kubectlGetWatch}
 
 msg() { echo "$@"; }
 dbg() { [ "$DEBUG" ] && msg ">DEBUG> $@"; }
 main() {
+  ${WATCH_FUNCTION} \
+  | filterApplyLoop
+}
+
+kubectlGetWatch() {
   local allNs=""
   [[ $ALL_NS ]] && allNs="-A"
   kubectl get --watch -o json --output-watch-events \
@@ -23,8 +29,7 @@ main() {
             ( $watch_events | split(", ") | index($type) ) != null
           )
         | .object
-      ' \
-    | filterApplyLoop
+      '
 }
 
 filterApplyLoop() {
