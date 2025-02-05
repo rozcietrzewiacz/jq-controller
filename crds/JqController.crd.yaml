@@ -4,10 +4,17 @@ metadata:
   name: jqcontrollers.xxx.jq
 spec:
   scope: Namespaced
+  conversion:
+    strategy: None
   group: xxx.jq
   names:
     kind: JqController
+    listKind: JqControllerList
     plural: jqcontrollers
+    shortNames:
+      - jctr
+      - jc
+    singular: jqcontroller
   versions:
     - name: v1alpha1
       served: true
@@ -16,72 +23,61 @@ spec:
         openAPIV3Schema:
           type: object
           properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
             spec:
               type: object
               properties:
-                apiVersion:
-                  type: string
-                kind:
-                  type: string
-                metadata:
+                transform:
                   type: object
                   properties:
-                    name:
+                    filter:
                       type: string
-                    namespace:
-                      type: string
-                spec:
-                  type: object
-                  properties:
-                    transform:
+                    input:
                       type: object
                       properties:
-                        input:
+                        watchEvents:
+                          type: string
+                        watchMask:
+                          type: string
+                        watchTarget:
                           type: object
                           properties:
-                            watchTarget:
-                              type: object
-                              properties:
-                                apiGroup:
-                                  type: string
-                                kind:
-                                  type: string
-                                namespace:
-                                  type: string
-                            watchEvents:
+                            apiGroup:
                               type: string
-                            watchMask:
+                            kind:
                               type: string
-                        variablesFrom:
+                            namespace:
+                              type: string
+                    output:
+                      type: object
+                      properties:
+                        affectedObjectTypes:
                           type: array
                           items:
                             type: object
                             properties:
-                              varName:
+                              apiGroup:
                                 type: string
-                              configMap:
-                                type: object
-                                properties:
-                                  name:
-                                    type: string
-                                  key:
-                                    type: string
-                        filter:
-                          type: string
-                        output:
-                          type: object
-                          properties:
-                            affectedObjectTypes:
-                              type: array
-                              items:
-                                type: object
-                                properties:
-                                  apiVersion:
-                                    type: string
-                                  kind:
-                                    type: string
-                    watcherConfig:
-                      type: object
-                      properties:
-                        image:
-                          type: string
+                              kind:
+                                type: string
+                    variablesFrom:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          configMap:
+                            type: string
+                          field:
+                            type: string
+                          jqCtrLabel:
+                            type: string
+                          var:
+                            type: string
+                watcherConfig:
+                  type: object
+                  properties:
+                    image:
+                      type: string
