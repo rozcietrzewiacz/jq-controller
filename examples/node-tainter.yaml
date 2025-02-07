@@ -1,0 +1,42 @@
+apiVersion: xxx.jq/v1alpha1
+kind: JqController
+metadata:
+  name: node-tainter
+  namespace: jq-ctr
+spec:
+  transform:
+    filter: |-
+      if hasTaint("unreachable") then
+        .spec.taints |= (
+          . + [
+            {
+              key: "node.kubernetes.io/out-of-service",
+              effect: "NoSchedule"
+            },
+            {
+              key: "node.kubernetes.io/out-of-service",
+              effect: "NoExecute"
+            }
+          ]
+          | unique_by(.key,.effect)
+        )
+      elif hasTaints then
+        .spec.taints |= ([
+          .[]
+          | select(.key != "node.kubernetes.io/out-of-service")
+        ])
+      else
+        .
+      end
+    input:
+      watchEvents: ADDED, MODIFIED
+      watchMask: .
+      watchTarget:
+        apiGroup: ""
+        kind: nodes
+    output:
+      affectedObjectTypes:
+      - apiGroup: ""
+        kind: nodes
+  watcherConfig:
+    image: bitnami/kubectl
