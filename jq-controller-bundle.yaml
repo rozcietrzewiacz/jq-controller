@@ -46,7 +46,7 @@ spec:
             - name: FOOTER_DEF_FILE
               value: /in/footer.jq
             - name: WATCH_TARGET
-              value: jqcontrollers.xxx.jq
+              value: jqcontrollers.jq-ctr.io
             - name: WATCH_MASK
               value: .
             - name: LIB_PATH
@@ -745,11 +745,11 @@ subjects:
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: jqcontrollers.xxx.jq
+  name: jqcontrollers.jq-ctr.io
 spec:
   conversion:
     strategy: None
-  group: xxx.jq
+  group: jq-ctr.io
   names:
     kind: JqController
     listKind: JqControllerList
