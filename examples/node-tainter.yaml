@@ -1,4 +1,4 @@
-apiVersion: xxx.jq/v1alpha1
+apiVersion: jq-ctr.io/v1alpha1
 kind: JqController
 metadata:
   name: node-tainter

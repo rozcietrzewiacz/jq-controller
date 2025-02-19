@@ -1,4 +1,4 @@
-apiVersion: xxx.jq/v1alpha1
+apiVersion: jq-ctr.io/v1alpha1
 kind: JqController
 metadata:
   name: adm-ctr
@@ -45,7 +45,7 @@ spec:
         # END pod
       ) # END deployment
       ##
-      | chown( "xxx.jq/v1alpha1"; "JqController";
+      | chown( "jq-ctr.io/v1alpha1"; "JqController";
                $customResourceName; $customResourceUid )
     input:
       watchEvents: ADDED, MODIFIED
