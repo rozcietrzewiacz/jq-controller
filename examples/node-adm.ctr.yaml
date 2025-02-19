@@ -6,47 +6,34 @@ metadata:
 spec:
   transform:
     filter: |-
-      include "lib";
-      ## main
-      .
-      | . as $source
-      | $source.metadata.name as $node
-      | $source.metadata.uid as $uid
+      $source.metadata.name as $node
       ####### POD #####
-      | deploy(
-        pod( "adm-" + $node )
-        ##
-        | .metadata |= (
-          .
-          | .namespace = "jq-ctr"
-          | .labels = {
-            "jq-ctr.io/cr-name": $customResourceName,
-            "jq-ctr.io/cr-uid": $customResourceUid,
-            "jq-ctr.io/source-kind": $source.kind,
-            "jq-ctr.io/source-name": $source.metadata.name,
-            "jq-ctr.io/source-uid": $source.metadata.uid
-          }
-        )
-        ##
+      | pod( "adm-" + $node )
         | .spec |= (
           .
           | .nodeName = $node
-          | .serviceAccount = "jq-adm"
           | .containers = [{
               name: "adm",
               image: "portainer/kubectl-shell",
               imagePullPolicy: "IfNotPresent",
               command: [ "tail", "-f", "/dev/null" ],
               securityContext: {
-                capabilities: {"add": ["NET_ADMIN"]}
-              }
+                capabilities: {"add": ["SYS_ADMIN"]},
+                runAsUser: 0,
+                privileged: true
+              },
+              volumeMounts: [{ name: "h", mountPath: "/h" }]
           }]
+          | .volumes += [{
+            name: "h",
+            hostPath: { path: "/" }
+          }]
+          | .hostPID = true
+          | .hostIPC = true
+          | .securityContext = { fsGroup: 0 }
         )
         # END pod
-      ) # END deployment
-      ##
-      | chown( "jq-ctr.io/v1alpha1"; "JqController";
-               $customResourceName; $customResourceUid )
+      #| rs -- wrap it in a ReplicaSet
     input:
       watchEvents: ADDED, MODIFIED
       watchMask: .
@@ -55,12 +42,10 @@ spec:
         kind: nodes
     output:
       affectedObjectTypes:
-        - apiGroup: apps
-          kind: deployments
+        - apiGroup: ""
+          kind: pods
     variablesFrom:
       - jqCtrLabel: cr-uid
         var: customResourceUid
-      - jqCtrLabel: cr-name
-        var: customResourceName
   watcherConfig:
     image: bitnami/kubectl

@@ -25,18 +25,23 @@ spec:
           .[]
           | select(.key != "node.kubernetes.io/out-of-service")
         ])
+        | .status.conditions += [{
+          status: "Unknown",
+          type: "Ready",
+          message: "Removed out-of-service taint"
+        }]
       else
         .
       end
     input:
       watchEvents: ADDED, MODIFIED
-      watchMask: .
+      watchMask: .spec.taints
       watchTarget:
         apiGroup: ""
         kind: nodes
     output:
       affectedObjectTypes:
-      - apiGroup: ""
-        kind: nodes
+        - apiGroup: ""
+          kind: nodes
   watcherConfig:
     image: bitnami/kubectl
