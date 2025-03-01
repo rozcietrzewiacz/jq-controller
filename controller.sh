@@ -9,12 +9,13 @@
 : ${FOOTER_DEF_FILE:="/in/footer.jq"}
 : ${WATCH_EVENTS:='ADDED, MODIFIED'}
 : ${WATCH_FUNCTION:=kubectlGetWatch}
+: ${APPLY_FUNCTION:=filterApplyLoop}
 
 msg() { echo "$@"; }
 dbg() { [ "$DEBUG" ] && msg ">DEBUG> $@"; }
 main() {
   ${WATCH_FUNCTION} \
-  | filterApplyLoop
+  | ${APPLY_FUNCTION}
 }
 
 kubectlGetWatch() {
