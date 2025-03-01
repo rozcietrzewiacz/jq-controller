@@ -22,11 +22,11 @@ kubectlGetWatch() {
   [[ $ALL_NS ]] && allNs="-A"
   kubectl get --watch -o json --output-watch-events \
     $allNs ${WATCH_TARGET} \
-    | jq --unbuffered -c --arg watch_events "$WATCH_EVENTS" \
+    | jq --unbuffered -c --arg watch_events "${WATCH_EVENTS// /}" \
       '
         .type as $type
         | select(
-            ( $watch_events | split(", ") | index($type) ) != null
+            ( $watch_events | split(",") | index($type) ) != null
           )
         | .object
       '
