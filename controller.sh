@@ -161,6 +161,7 @@ handleExit() {
 }
 
 world() {
+  ## TODO: Replace with sth generic like ACTION_ONCE ???
   if [[ ${KUBECTL_MAIN_ACTION} == "create" ]]
   then
     main

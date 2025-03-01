@@ -321,6 +321,7 @@ data:
     | $src.watchTarget as $target #XXX bad name!
     | $cr.spec.transform.filter as $filter
     | $cr.spec.watcherConfig.image as $image
+    | ($cr.spec.watcherConfig.addEnv // []) as $addEnv
     |
     ### output generators ###
     (
@@ -376,6 +377,7 @@ data:
                 []
                 end
               )
+            + $addEnv
             )
           }]
         |.spec.volumes[0] = { "name": "scripts", "configMap": { "defaultMode": 420, "name": "jq-controller.sh" }}
@@ -819,6 +821,15 @@ spec:
                   type: object
                 watcherConfig:
                   properties:
+                    addEnv:
+                      items:
+                        properties:
+                          name:
+                            type: string
+                          value:
+                            type: string
+                        type: object
+                      type: array
                     image:
                       type: string
                   type: object
