@@ -53,6 +53,8 @@ spec:
               value: /jqLib
             - name: EXTRA_ARGS_PATH
               value: /extra
+            - name: ALL_NS
+              value: "yes"
           image: portainer/kubectl-shell
           imagePullPolicy: IfNotPresent
           name: ctr
@@ -176,7 +178,7 @@ data:
         dbg "read new json: \"$inputUpdate\""
         # TODO: filter out based on fieldManager metadata
         #
-        [ $(_masked "${inputUpdate}") == $(_masked "${lastValue}") ] \
+        [ "$(_masked "${inputUpdate}")" == "$(_masked "${lastValue}")" ] \
         || {
           lastValue="${inputUpdate}"
           echo
@@ -342,6 +344,7 @@ data:
           "jq-ctr.io/cr-uid": $customResourceUid,
           "jq-ctr.io/cr-name": $customResourceName
         }
+        |.metadata.namespace = $crNamespace
         |.spec.containers = [{
             "name": "ctr",
             "image": $image,
@@ -395,6 +398,7 @@ data:
     # 2. filter definition
     (
       cm( $customResourceName )
+      | .metadata.namespace = $crNamespace
       | .data["header.jq"] = (
         $cr.spec.transform.header
         #

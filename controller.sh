@@ -58,7 +58,7 @@ filterApplyLoop() {
     dbg "read new json: \"$inputUpdate\""
     # TODO: filter out based on fieldManager metadata
     #
-    [ $(_masked "${inputUpdate}") == $(_masked "${lastValue}") ] \
+    [ "$(_masked "${inputUpdate}")" == "$(_masked "${lastValue}")" ] \
     || {
       lastValue="${inputUpdate}"
       echo
