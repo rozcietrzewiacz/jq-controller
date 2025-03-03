@@ -14,8 +14,23 @@
 msg() { echo "$@"; }
 dbg() { [ "$DEBUG" ] && msg ">DEBUG> $@"; }
 main() {
+  local fullFilter=$(mktemp)
+  _combineJsons() {
+    cat \
+      ${HEADER_DEF_FILE} \
+      ${TRANSFORM_DEF_FILE} \
+      ${FOOTER_DEF_FILE} \
+      > "$fullFilter"
+  }
+  _cleanup() {
+    rm -v "$fullFilter"
+  }
+
+  _combineJsons
+  export JQ_EXTRA_ARGS
   ${WATCH_FUNCTION} \
-  | ${APPLY_FUNCTION}
+  | ${APPLY_FUNCTION} "$fullFilter"
+  _cleanup
 }
 
 kubectlGetWatch() {
@@ -34,25 +49,14 @@ kubectlGetWatch() {
 }
 
 filterApplyLoop() {
-  local fullFilter=$(mktemp)
+  local fullFilter=$1
   declare -A LastRev
-  _combineJsons() {
-    cat \
-      ${HEADER_DEF_FILE} \
-      ${TRANSFORM_DEF_FILE} \
-      ${FOOTER_DEF_FILE} \
-      > "$fullFilter"
-  }
-  _cleanup() {
-    rm -v "$fullFilter"
-  }
   _uid() { jq -r '.metadata.uid'; }
   _rev() { jq -r '.metadata.resourceVersion'; }
   _masked() { <<<"$@" jq -c "$WATCH_MASK"; }
 
   local inputUpdate lastValue output result=0 selfMod= inUid
   dbg "in filterApplyLoop"
-  _combineJsons
   while read -r inputUpdate
   do
     dbg "read new json: \"$inputUpdate\""
@@ -102,7 +106,6 @@ filterApplyLoop() {
       -f "${fullFilter}" \
       $JQ_EXTRA_ARGS
   fi
-  _cleanup
 }
 
 hello() {
@@ -147,12 +150,12 @@ hello() {
       WATCH_LIST+=" ${EXTRA_ARGS_PATH}/${name}:x"         # i
     done                                                  # n
     cd - &>/dev/null                                      # g
-    echo "JQ_EXTRA_ARGS: $JQ_EXTRA_ARGS"                  #
-  }                                                       # f
-  [ "${LIB_PATH}" != "" ] && {                            # o
-    msg " > appending lib path to args..."                # r
-    JQ_EXTRA_ARGS+=" -L $LIB_PATH"                        # ?
   }                                                       #
+  [ "${LIB_PATH}" != "" ] && {                            # f
+    msg " > appending lib path to args..."                # o
+    JQ_EXTRA_ARGS+=" -L $LIB_PATH"                        # r
+  }                                                       #
+  echo "JQ_EXTRA_ARGS: $JQ_EXTRA_ARGS"                    # ?
 }
 
 handleExit() {
