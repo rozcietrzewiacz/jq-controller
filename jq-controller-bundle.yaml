@@ -624,14 +624,14 @@ data:
               verbs: ["get", "list", "watch"]
             }
         ) as $ro
-      | ( writeObjects[]
+      | [( writeObjects[]
           | {
               apiGroups: [.apiGroup],
               resources: [.kind],
               verbs: ["get", "list",
                 "create", "update", "patch", "delete"]
             }
-        ) as $rw
+        )] as $rw
       | ( "jq-ctr:" + name ) as $roleName
       |{
         "apiVersion": "v1",
@@ -647,10 +647,7 @@ data:
         "metadata": {
           "name": $roleName
         },
-        "rules": [
-          $ro,
-          $rw
-        ]
+        "rules": ( [$ro] + $rw )
       },
       {
         "apiVersion": "rbac.authorization.k8s.io/v1",
