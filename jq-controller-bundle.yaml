@@ -148,6 +148,11 @@ data:
 
       _combineJsons
       export JQ_EXTRA_ARGS
+      if [ ${#CUSTOM_APPLY_SCRIPT} -gt 0 ]
+      then
+        echo "${CUSTOM_APPLY_SCRIPT}" > /tmp/custom.sh
+        APPLY_FUNCTION="bash /tmp/custom.sh"
+      fi
       ${WATCH_FUNCTION} \
       | ${APPLY_FUNCTION} "$fullFilter"
       _cleanup
@@ -305,10 +310,21 @@ data:
 
     hello
     world
-
   dbg.sh: |+
     #!/bin/bash
-    echo Dummy
+    echo ">>> Starting $0 with args: $@"
+    set -x
+    cat "$@"
+    echo
+    set +x
+    # capture based on filter
+    jq -c -f "$@" ${JQ_EXTRA_ARGS} \
+    | while IFS= read -r input
+      do
+      echo "  > input size: $( <<<"$input" wc -c )"
+        #33echo "> curl ... -d type=$type -d memo=\"$memo\""
+        jq -C <<<"$input"
+      done
 
 kind: ConfigMap
 metadata:

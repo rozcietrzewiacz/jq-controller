@@ -28,6 +28,11 @@ main() {
 
   _combineJsons
   export JQ_EXTRA_ARGS
+  if [ ${#CUSTOM_APPLY_SCRIPT} -gt 0 ]
+  then
+    echo "${CUSTOM_APPLY_SCRIPT}" > /tmp/custom.sh
+    APPLY_FUNCTION="bash /tmp/custom.sh"
+  fi
   ${WATCH_FUNCTION} \
   | ${APPLY_FUNCTION} "$fullFilter"
   _cleanup
