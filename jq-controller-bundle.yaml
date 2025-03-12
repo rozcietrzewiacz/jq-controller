@@ -161,6 +161,31 @@ data:
     kubectlGetWatch() {
       local allNs=""
       [[ $ALL_NS ]] && allNs="-A"
+      # The default is to only pass the k8s object to the APPLY_FUNCTION.
+      # This can be changed by setting the
+      # KUBECTL_WATCH_EVENTS_OBJECT_FILTER variable, which allows
+      # to choose how the full event json is passed
+      # to the main logic filter. Note that the default "header"
+      # is applied directly after this, so unless you change
+      # the HEADER_DEF_FILE, you should make sure that what comes out
+      # from the events filter, includes the standard k8s object
+      # metadata under .metadata field. The default value of
+      # KUBECTL_WATCH_EVENTS_OBJECT_FILTER is ".object", which means
+      # that the full k8s object is passed, but no event info.
+      # But it you use custom APPLY_FUNCTION, you may choose to pass
+      # the event info as an extra field, e.g.:
+      # ".object|.event_type=$type"
+      # (note that $type holds the event type name below)
+      #
+      # TODO:
+      # Consider following alternative designs:
+      # 1. (light change, similar overall complexity)
+      #   Pass the object filter as an argument instead of env var;
+      #   thus, override WATCH_FUNCTION="kubectlGetWatch <event_flt>"
+      # 2. (deeper change, partly siplified design..?)
+      #   Always pass the full original event (after type selection
+      #   filter) and adjust header (?)
+      : ${KUBECTL_WATCH_EVENTS_OBJECT_FILTER:=".object"}
       kubectl get --watch -o json --output-watch-events \
         $allNs ${WATCH_TARGET} \
         | jq --unbuffered -c --arg watch_events "${WATCH_EVENTS// /}" \
@@ -169,7 +194,7 @@ data:
             | select(
                 ( $watch_events | split(",") | index($type) ) != null
               )
-            | .object
+            | '"${KUBECTL_WATCH_EVENTS_OBJECT_FILTER}"'
           '
     }
 
@@ -481,6 +506,18 @@ apiVersion: v1
 data:
   lib.jq: |-
     def tpl(s): s | fromjson;
+    def clean:
+      .metadata |=
+      ( del(.annotations)
+        | del(.uid)
+        | del(.creationTimestamp)
+        | del(.resourceVersion)
+        | del(.generation)
+        | del(.managedFields)
+      )
+      | del(.status)
+      | del(.secrets)
+    ;
     def chown( api; kind; name; uid ):
       .metadata.ownerReferences = [
         {
